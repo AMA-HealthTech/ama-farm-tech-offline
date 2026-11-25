@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="AMA FarmTech Offline">
+  <rect width="512" height="512" rx="112" fill="#1e5c37"/>
+  <!-- soil line -->
+  <path d="M120 388h272" stroke="#a9d3b4" stroke-width="22" stroke-linecap="round" fill="none"/>
+  <!-- stem -->
+  <path d="M256 388V232" stroke="#ffffff" stroke-width="26" stroke-linecap="round" fill="none"/>
+  <!-- right leaf -->
+  <path d="M256 250c0-62 38-100 112-100 0 70-40 100-112 100z" fill="#ffffff"/>
+  <!-- left leaf -->
+  <path d="M256 296c0-46-30-76-92-76 0 54 32 76 92 76z" fill="#d8efde"/>
+</svg>
