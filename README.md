@@ -1,7 +1,7 @@
 # AMA FarmTech Offline
 
 **Ama Farms Ltd — offline farm records for Android.**
-Phase 1: foundation and offline engine. Version 1.0.0.
+Phase 1: foundation and offline engine · **Phase 2: crop production management** · Version 1.1.0.
 
 An installable web app (PWA) that keeps your farm records **on your phone**, works with **no internet** after the first load, and moves records between phones with **password-encrypted backup files**. No account, no subscription, no cloud database. GitHub Pages only hosts the app's files.
 
@@ -10,293 +10,295 @@ An installable web app (PWA) that keeps your farm records **on your phone**, wor
 
 ---
 
-## 1. What Phase 1 contains
+## 1. What the app contains
 
 | Section | What it does |
 |---|---|
-| **Dashboard** | Farm name, number of farms, fields and records, total field area, recent activity, storage status, online/offline indicator, last backup date, backup reminder. Everything shown comes from the records on the phone. |
-| **My Farm** | Create, edit and delete farms (several allowed) and the fields inside them. Default country Uganda, currency UGX, time zone Africa/Kampala. Areas in acres or hectares, converted exactly. |
+| **Home** | Main farm, number of farms, fields and records, total field area, crop-production summary (only when you have crop records), recent activity, storage status, online/offline indicator, last backup date, backup reminder. Everything shown comes from the records on the phone. |
+| **My Farm** | Create, edit and delete farms (several allowed) and the fields inside them. Default country Uganda, currency UGX, time zone Africa/Kampala. Areas in acres, hectares or quarter-acres, converted exactly. A field page now also lists the crop cycles planned on it. |
+| **Crops** *(new in Phase 2)* | Crop catalogue, seed varieties, production cycles, planting batches, planting records, an overview and a calendar. See section 3. |
 | **Records** | Search and filter farms, fields and the activity log. |
-| **Backup** | Create an encrypted `.amabackup` file; restore it on this or another phone with a preview, merge or replace, and a safety backup. |
+| **Backup** | Create an encrypted `.amabackup` file; restore it on this or another phone with a preview, merge or replace, and a safety backup. Phase 2 records are included. |
 | **Settings** | Defaults, install instructions, storage protection, offline status, check for updates, erase all data. |
 
-Not in Phase 1 (by design): crops, inventory, finance, sales, reports, photos.
+Not in the app (by design, later phases): inventory, finance, sales, reports, photos, task management, notifications.
 
 ---
 
-## 2. Architecture overview
+## 2. Architecture
 
 ```
  Phone (Chrome)
- ┌──────────────────────────────────────────────────────────────┐
- │  index.html  ── loads ──►  db.js  ►  backup.js  ►  app.js    │
- │                                                              │
- │  app.js     screens, forms, routing (#/ addresses),          │
- │             install + storage + update messages              │
- │  backup.js  encrypt / decrypt, restore plan (merge/replace)  │
- │  db.js      validation, exact unit maths, IndexedDB,         │
- │             transactions, migrations                         │
- │                                                              │
- │  IndexedDB  ◄── all farm records live here (on the phone)    │
- │  Cache      ◄── app files only (HTML, CSS, JS, icons)        │
- │                                                              │
- │  service-worker.js  serves the app files from the cache,     │
- │                     so the app opens with no internet        │
- └──────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │  index.html ─ loads ─►  db.js ► crops.js ► backup.js ► app.js ► crops-ui.js │
+ │                                                                        │
+ │  db.js        validation, exact unit maths, IndexedDB, transactions,   │
+ │               numbered migrations (Phase 1 stores + Phase 2 stores)    │
+ │  crops.js     crop rules: validation, field-area allocation, status    │
+ │               rules, statistics, calendar events, safe delete rules    │
+ │  backup.js    encrypt / decrypt, restore plan (merge / replace),       │
+ │               relationship checks so a restore never leaves orphans    │
+ │  app.js       Phase 1 screens, routing (#/ addresses), install,        │
+ │               storage, update messages; offers AMA.ui to other files   │
+ │  crops-ui.js  all Crops screens; adds its routes to the router         │
+ │                                                                        │
+ │  IndexedDB  ◄── all records live here (on the phone)                   │
+ │  Cache      ◄── app files only (HTML, CSS, JS, icons)                  │
+ │  service-worker.js  serves the app files from the cache, so the app    │
+ │                     opens with no internet                             │
+ └────────────────────────────────────────────────────────────────────────┘
         ▲ app files only (one-way, when online)
  GitHub Pages  (public, static hosting — never receives records)
 ```
 
-**Key decisions**
+**How Phase 2 was added without disturbing Phase 1**
 
-* **Records never pass through the service worker.** The service worker caches only the app's own files. Records are in IndexedDB.
-* **Exact area maths.** Areas are stored as the number you typed *and* as an exact square-metre string (1 acre = 4046.8564224 m² exactly, 1 ha = 10,000 m²), calculated with whole-number (BigInt) arithmetic. No floating-point rounding anywhere.
-* **Safe screens.** Every piece of text from a form or a backup file is put on the screen as plain text. The app never builds HTML from data, and a Content-Security-Policy blocks outside scripts, fonts and connections.
-* **Relative paths everywhere** (`./`, `icons/...`). The app works at `https://name.github.io/ama-farmtech-offline/`, in any other folder, or at a site root.
-* **Safe updates.** A new version downloads quietly into a new cache. The app shows "A new version is ready" and only switches when you tap **Update now**, so files never change under you while you type.
+* **Extension, not rebuild.** Phase 2 is two new files (`crops.js` data rules, `crops-ui.js` screens) plus small edits to the five existing code files. The database keeps its name (`ama-farmtech-offline`); its version goes from 1 to 2.
+* **Safe, additive migration.** Version 2 only *creates* five new stores. It never reads, changes or deletes a farm, field, activity, setting or backup-history record. If an upgrade ever failed, the whole upgrade is cancelled and the records stay as they were.
+* **Records never pass through the service worker.** It caches only the app's own files (now 13).
+* **Exact area maths.** Areas are stored as typed *and* as an exact square-metre string (1 acre = 4046.8564224 m², 1 quarter-acre = 1011.7141056 m², 1 ha = 10,000 m²) using whole-number (BigInt) arithmetic. Field-area limits are checked with the same exact numbers, so "exactly the whole field" is allowed and one extra square millimetre is not.
+* **Safe screens.** Text from forms or backup files is only ever put on screen as plain text. A Content-Security-Policy blocks outside scripts, fonts and connections.
+* **Relative paths everywhere.** The app works at `https://name.github.io/ama-farmtech-offline/` or anywhere else.
+* **Safe updates.** A new version downloads quietly into a new cache. The app shows "A new version is ready" and switches only when you tap **Update now**.
 
-### File structure
+### Files (13 app files; Settings shows "All 13 app files are stored")
 
 ```
 ama-farmtech-offline/
-├── index.html              page shell, bottom navigation, security policy
+├── index.html              page shell, bottom navigation (6 items), security policy
 ├── styles.css              forest-green mobile design
-├── app.js                  screens and behaviour
+├── app.js                  Phase 1 screens, routing, shared building blocks
 ├── db.js                   database, validation, unit conversion, migrations
+├── crops.js                NEW  crop rules, allocation check, statistics, calendar events
+├── crops-ui.js             NEW  every Crops screen and form
 ├── backup.js               encrypted backup and restore
 ├── service-worker.js       offline app files + safe updates
 ├── manifest.webmanifest    installation details (name, icons, colours)
 ├── README.md               this guide
 └── icons/
-    ├── icon.svg            app icon (source below)
-    ├── icon-192.png        Android home-screen icon
-    ├── icon-512.png        Android install icon
-    └── icon-maskable-512.png   icon for round/squircle masks
+    ├── icon.svg
+    ├── icon-192.png
+    ├── icon-512.png
+    └── icon-maskable-512.png
 ```
 
-The three PNG icons are the only additions to your required list. Chrome on Android needs 192 px and 512 px PNG icons to offer a proper install.
+### Database (IndexedDB `ama-farmtech-offline`, version 2)
 
-### Database (IndexedDB, name `ama-farmtech-offline`, version 1)
-
-| Store | Holds | Indexes (for fast search) |
+| Store | Holds | Indexes |
 |---|---|---|
-| `farms` | farm profiles | `nameLower`, `createdAt`, `updatedAt` |
-| `fields` | fields of a farm | `farmId`, `farmId_codeLower`, `nameLower`, `status`, `createdAt`, `updatedAt` |
-| `settings` | defaults, last backup date, schema version | (key lookup) |
-| `activities` | log of what was done | `createdAt`, `entityType`, `entityId` |
-| `backups` | history of backups, safety backups and restores (details only, never the files) | `createdAt`, `kind` |
+| `farms`, `fields`, `settings`, `activities`, `backups` | Phase 1 — unchanged | as in Phase 1 |
+| `crops` | crop catalogue | `nameLower`, `category`, `createdAt`, `updatedAt` |
+| `varieties` | seed varieties of a crop | `cropId`, `dupKey`, `createdAt`, `updatedAt` |
+| `cycles` | production cycles (farm, field, crop, variety, dates, area, population, status) | `farmId`, `fieldId`, `cropId`, `varietyId`, `status`, `createdAt`, `updatedAt` |
+| `batches` | planting / transplanting batches of a cycle (planned *and* actual numbers) | `cycleId`, `createdAt`, `updatedAt` |
+| `plantings` | dated planting records (seeding, nursery sowing, transplanting, gap filling, other) | `cycleId`, `batchId`, `date`, `createdAt`, `updatedAt` |
 
-Every record has a UUID `id`, `createdAt` and `updatedAt`. Every save, edit and delete runs in **one transaction** together with its log entry, so a failure leaves nothing half-written.
+Every record has a UUID `id`, `createdAt` and `updatedAt`. Crops, varieties and cycles also have `archivedAt` (empty, or the date archived). Every save, edit and delete runs in **one transaction** together with its activity-log entry, so a failure leaves nothing half-written.
 
-**Upgrades.** `db.js` has a list of numbered migrations. A new version adds one function (create a store, add an index, convert records). The rules are written beside the list: migrations must never delete data, and if one fails the whole upgrade is cancelled and your records stay exactly as they were.
-
-### Backup file format (`.amabackup`)
+### Backup file format (`.amabackup`) — container unchanged, content extended
 
 | Bytes | Content |
 |---|---|
-| 0–7 | `AMAFTBAK` (identifies the file) |
+| 0–7 | `AMAFTBAK` |
 | 8–9 | format version (1), flags |
 | 10–13 | PBKDF2 iteration count (600,000) |
-| 14–29 | random **salt** (new for every backup) |
-| 30–41 | random **IV** (new for every backup) |
-| 42–end | **AES-256-GCM** encrypted data + 16-byte authentication tag |
+| 14–29 | random salt (new for every backup) |
+| 30–41 | random IV (new for every backup) |
+| 42–end | AES-256-GCM encrypted data + 16-byte authentication tag |
 
-The key comes from your password with **PBKDF2-SHA-256**. The first 42 bytes are also authenticated, so changing any byte makes opening fail. Inside (once decrypted): app name and version, database version, export date and time, counts, and all farms, fields, activity, backup history and portable settings.
-Nothing about the phone or browser is used in the key, so **the file plus the password is enough on any phone**. The password is never stored anywhere.
+Inside (once decrypted): app version (1.1.0), database version (2), export date, counts, and every farm, field, **crop, variety, cycle, batch, planting record**, activity, backup history and portable settings. A backup made by version 1.0.0 (no crop stores) still restores in 1.1.0. An old 1.0.0 app refuses a 1.1.0 backup with a "made by a newer version" message instead of half-loading it. A restore that would leave a record pointing at something missing (a cycle without its field, a batch without its cycle, a field belonging to a different farm…) is blocked, and nothing is imported.
 
 ---
 
-## 3. Put the app on GitHub (from your phone)
+## 3. Phase 2 — the Crops module
 
-You need a free GitHub account. Use **Chrome** on your phone. Some GitHub pages show more options if you switch Chrome to **Desktop site** (⋮ menu → *Desktop site*).
+Open **Crops** in the bottom menu. It has four tabs: **Overview · Cycles · Catalogue · Calendar**.
 
-### A. Get the files onto your phone
-1. Download `ama-farmtech-offline.zip` from this chat.
-2. Open the **Files** app → *Downloads* → tap the ZIP → **Extract**. You get a folder `ama-farmtech-offline`.
+**Crop catalogue.** A crop has a name, category (Vegetables, Cereals and grains, Legumes, Root and tuber crops, Fruits, Other crops), optional scientific name, description, usual planting method (transplanting, direct seeding, other), optional typical growing days and notes. Crops can be added, edited, viewed and archived. Two crops cannot share a name (capitals ignored). Nothing is pre-loaded: you add your own crops.
 
-### B. Create the repository
-1. Open **github.com**, sign in, tap **+** → **New repository**.
-2. Repository name: `ama-farmtech-offline` (use exactly this, all lowercase).
-3. Choose **Public**. (Free GitHub Pages needs a public repository. That is safe here, because the repository holds only the app's code and no farm data.)
-4. Leave "Add a README file" **unticked**. Tap **Create repository**.
+**Varieties.** A variety belongs to a crop: name, supplier, seed type (hybrid, open-pollinated, other), packet size, quantity bought, purchase date, lot number, expiry date, seed cost (with currency), germination %, notes. Only the name is required. One crop can have many varieties, and a variety can be used by many cycles.
 
-### C. Upload the main files
-1. On the new empty repository page, tap **uploading an existing file**.
-2. Tap **choose your files** and select these **8 files** from the extracted folder (not the `icons` folder):
-   `index.html`, `styles.css`, `app.js`, `db.js`, `backup.js`, `manifest.webmanifest`, `service-worker.js`, `README.md`
-3. Wait until all 8 show as uploaded, then tap **Commit changes**.
+**Production cycles.** One cycle = one crop (and optionally a variety) on one field in one season: name (suggested for you), season, farm, field, crop, variety, planting method, production system (open field, greenhouse, …), water supply, planned and actual planting dates, planned harvest start, expected harvest end, area (acres, hectares or quarter-acres), target and actual plants, status (Planned → Land preparation → Nursery → Planted → Growing → Harvesting → Completed, or Cancelled), notes. The cycle page has seven numbered sections: **1 Production overview · 2 Farm and field allocation · 3 Crop and variety · 4 Planting information · 5 Population and spacing · 6 Production timeline · 7 Notes and records.**
 
-### D. Add the icons folder
-GitHub's phone uploader cannot upload folders, so make the folder first:
-1. In the repository tap **Add file → Create new file**.
-2. In the name box type `icons/icon.svg` (typing the `/` creates the folder).
-3. Paste the icon text below into the big box and tap **Commit changes**.
+**Field area rule.** Several cycles may share a field **only if the area in use at the same time does not exceed the field**. While you type, the form shows "Fits in the field" with the percentage. A single cycle larger than its whole field is refused. If several cycles *at the same time* would together exceed the field, the app shows "This field would be over-allocated" and lets you go back or "Save anyway" (for real situations such as intercropping). Archived and cancelled cycles use no area; completed cycles only use the area during their dated window. Cycles with no dates count as overlapping everything not finished, so the check errs on the side of warning you.
+
+**Planting batches and records.** A cycle can have several **batches** (for example nursery sowing on one date, transplanting in two lots). Each batch keeps **planned** numbers (seed, seedlings, plants) and **actual** numbers side by side, plus nursery details, row spacing, plant spacing and rows. **Planting records** are a dated log (what was done, how many, where, which batch). Records and "actual" dates cannot be in the future.
+
+**Overview.** Active cycles, crops being cultivated, cultivated area, active fields, upcoming plantings (with overdue flagged), what is growing and being harvested, recently added records. Every number is computed from saved records. With no data you see an explanation and a button to start, never invented numbers. *Active* means Planned to Harvesting (not archived). *In progress* means Land preparation to Harvesting; cultivated area, crops being cultivated and active fields count only in-progress cycles.
+
+**Calendar.** An agenda built only from the dates you saved (planting, harvest start, expected harvest end, nursery start, transplanting, and your planting records), grouped by month, with Upcoming/Past tabs, a crop filter and Overdue/Today flags. It is not a task manager and sends no notifications.
+
+**Careful deleting.** Archive is the normal way to hide something. Delete is blocked while something depends on a record: a farm or field with cycles cannot be deleted; a crop used by cycles cannot be deleted; a variety used by a cycle cannot be deleted. Deleting a cycle also deletes its batches and records, shows exactly what will go, and asks you to type `DELETE`.
+
+### Try the example scenario (Ama Farms, tomatoes)
+Nothing about it is built into the app. Enter it yourself:
+1. **My Farm** → add farm *Ama Farms* (Arua, West Nile) and a field, for example *Block A*, 2 acres.
+2. **Crops → Catalogue → Add crop**: *Tomato*, Vegetables, usual method Transplanting.
+3. Open Tomato → **Add variety**: *Ansal F1*, Hybrid.
+4. **Crops → New cycle**: farm *Ama Farms*, field *Block A*, crop *Tomato*, variety *Ansal F1*, production system *Open field*, water *Irrigated*, area unit *Quarter-acres*, area *1.5*, target plants *3500*. You will see "= 0.375 acres" and "Fits in the field". Save.
+5. On the cycle page add a **planting batch** (planned seedlings, spacing), later edit it to add the actual numbers, and add a **planting record**.
+
+---
+
+## 4. Updating your phone to version 1.1.0
+
+Your farms and fields are not touched by the update. **Before you start, make a backup** (Backup → Create encrypted backup) and check the file is in Downloads.
+
+### A. Put the new files on GitHub (from your phone)
+1. Download `ama-farmtech-offline.zip` from this chat. In **Files → Downloads**, tap it → **Extract**.
+2. In Chrome open **your repository on GitHub** (the one you made for Phase 1). If a menu is missing, use Chrome's ⋮ → **Desktop site**.
+3. Tap **Add file → Upload files**. Choose these **8 files** from the extracted folder (not the icons folder):
+
+   | New (add) | Replaced (same name, uploading replaces the old one) |
+   |---|---|
+   | `crops.js` | `app.js` |
+   | `crops-ui.js` | `backup.js` |
+   | | `db.js` |
+   | | `index.html` |
+   | | `service-worker.js` |
+   | | `styles.css` |
+
+   You may also upload `README.md` (replaces the old guide). **Do not touch** `manifest.webmanifest` or the `icons` folder: they did not change.
+4. Wait until all files show as uploaded, then tap **Commit changes**.
+5. Wait 1–3 minutes. In the repository tap **Actions** and wait for the latest "pages build and deployment" to show a green tick.
+6. Check the repository's top level now lists: `app.js  backup.js  crops-ui.js  crops.js  db.js  icons/  index.html  manifest.webmanifest  README.md  service-worker.js  styles.css`.
+
+> **Never upload a `.amabackup` file, photos or exported records to this repository.**
+
+### B. Update the installed app on your phone
+1. Open the installed app **with internet on**.
+2. Go to **Settings → Check for a new version**.
+3. A banner says **"A new version is ready"**. Tap **Update now**. The app reloads. Settings should show **v1.1.0**, the bottom menu should now have **Crops**, and your farms and fields should look exactly as before.
+4. Open **Settings** again and wait until it says **"All 13 app files are stored on this phone"**.
+5. If the banner does not appear: swipe the app away in recent apps, open it again with internet, wait 10 seconds and repeat step 2. If it still does not, check that all 8 files were uploaded (step A6).
+
+The app never changes its files while you are typing: it only switches when you tap **Update now**.
+
+---
+
+## 5. First-time install (new phone, nothing installed yet)
+
+Use **Chrome** and a free GitHub account.
+
+1. Create a **public** repository named exactly `ama-farmtech-offline`. Leave "Add a README" unticked.
+2. **Uploading an existing file** → choose these **10 files** from the extracted folder: `index.html`, `styles.css`, `app.js`, `db.js`, `crops.js`, `crops-ui.js`, `backup.js`, `manifest.webmanifest`, `service-worker.js`, `README.md` → **Commit changes**.
+3. GitHub's phone uploader cannot upload folders, so make the icons folder: **Add file → Create new file**, name `icons/icon.svg`, paste the icon text below, **Commit changes**.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="AMA FarmTech Offline">
   <rect width="512" height="512" rx="112" fill="#1e5c37"/>
-  <!-- soil line -->
   <path d="M120 388h272" stroke="#a9d3b4" stroke-width="22" stroke-linecap="round" fill="none"/>
-  <!-- stem -->
   <path d="M256 388V232" stroke="#ffffff" stroke-width="26" stroke-linecap="round" fill="none"/>
-  <!-- right leaf -->
   <path d="M256 250c0-62 38-100 112-100 0 70-40 100-112 100z" fill="#ffffff"/>
-  <!-- left leaf -->
   <path d="M256 296c0-46-30-76-92-76 0 54 32 76 92 76z" fill="#d8efde"/>
 </svg>
 ```
 
-4. Open the new **icons** folder → **Add file → Upload files** → choose the three PNGs from the extracted `icons` folder: `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` → **Commit changes**.
-
-### E. Check the file list
-The repository's main page must show, in the **top level** (not inside another folder):
-`app.js  backup.js  db.js  icons/  index.html  manifest.webmanifest  README.md  service-worker.js  styles.css`
-File names are case-sensitive. `icons/` must contain the 4 icon files.
-
----
-
-## 4. Turn on GitHub Pages
-
-1. In your repository tap **Settings** (use *Desktop site* if you can't see it) → **Pages**.
-2. Under **Build and deployment → Source** choose **Deploy from a branch**.
-3. Branch: **main**, folder: **/ (root)** → **Save**.
-4. Wait 1–3 minutes. Refresh the Pages screen until it says *"Your site is live at …"*.
-
-Your address is:
-
-```
-https://YOUR-GITHUB-USERNAME.github.io/ama-farmtech-offline/
-```
-
-Open it in Chrome. You should see the dashboard with the welcome message. If you see GitHub's "404", see *Troubleshooting* at the end.
-
----
-
-## 5. Install on Android (Chrome)
-
-1. Open your address in **Google Chrome** (not inside WhatsApp or Facebook).
-2. Let it load, then open **Settings** in the app. Under *Offline use and updates* you should read **"All 11 app files are stored on this phone"**. If it says "Saving…", keep the app open a few seconds and open Settings again.
-3. Tap Chrome's **⋮** menu → **Install app** (or **Add to Home screen** → **Install**). On the Dashboard and in Settings the app also shows an **Install app** button when Chrome offers it.
-4. Open **AMA FarmTech** from your home screen. It opens full screen like a normal app.
-
-### Offline checklist (do this on your phone before trusting the app)
-- [ ] Opened the address once with internet. Settings shows "All 11 app files are stored".
-- [ ] Installed to the home screen.
-- [ ] Created a test farm and a test field.
-- [ ] Switched on **Airplane mode**. Fully closed the app (swipe it away in recent apps). Opened it again from the home screen: it opens, shows **Offline**, and the test farm is still there.
-- [ ] Added another field while in Airplane mode: it saves.
-- [ ] Made a backup in Airplane mode: the file appears in **Files → Downloads**.
-- [ ] Switched Airplane mode off, restarted the phone, opened the app: all records still there.
-- [ ] Opened the backup file on a **second phone** (see section 6) with the password: records match.
-- [ ] Typed a **wrong password**: the app refuses it with a clear message.
+4. Open the new **icons** folder → **Add file → Upload files** → the three PNGs `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` → **Commit changes**.
+5. **Settings → Pages → Deploy from a branch → main, / (root) → Save.** Wait 1–3 minutes. The address is `https://YOUR-USERNAME.github.io/ama-farmtech-offline/`.
+6. Open it in Chrome, wait for it to load, open **Settings** in the app: it should say **All 13 app files are stored on this phone**. Then Chrome's ⋮ → **Install app**.
 
 ---
 
 ## 6. Backups and moving to another phone
 
-### Make a backup
-**Backup → Create encrypted backup.** Choose a password (8+ characters; a short sentence of 4 words is strong and easy to remember), repeat it, tick the box and tap the button. Chrome saves `AMA-FarmTech-backup-YYYYMMDD-HHMM.amabackup` in **Downloads**.
-Then **check that the file is in Downloads** (Chrome does not let the app confirm that), and copy it somewhere outside the phone: Google Drive, email to yourself, or another phone.
+**Make a backup:** Backup → Create encrypted backup. Choose a password (8+ characters; four easy words is strong), repeat it, tick the box, tap the button. Chrome saves `AMA-FarmTech-backup-YYYYMMDD-HHMM.amabackup` in **Downloads**. Check it is there, and copy it somewhere outside the phone (Drive, email to yourself, another phone). The backup holds farms, fields, crops, varieties, cycles, batches, planting records and the activity log.
 
-> **The password cannot be recovered.** It is not stored anywhere. If you lose it, nobody (including Ama Farms and the developers) can open the backup. Write it down and keep it apart from the file.
+> **The password cannot be recovered.** It is not stored anywhere. Lose it and nobody can open the backup.
 
-### Restore on another phone
-1. Install the app on the new phone (section 5).
-2. Copy the `.amabackup` file to it (Drive, email, WhatsApp as *document*, Bluetooth or cable).
-3. **Backup → Restore from backup** → choose the file → enter the password → **Open backup**.
-4. Read the preview (what is new, what is identical, what differs). Nothing is saved yet.
-5. Choose **Merge** (adds what is missing, deletes nothing) or **Replace everything**.
-   * If the same record exists on both phones with different contents, **Merge keeps the phone's copy by default**. You can instead choose "use the newest" or "use the backup's copy".
-   * Anything that would overwrite or delete records first asks you to **save a safety backup of the phone's current records**. Replace also needs you to type `REPLACE`.
+**Restore:** Install the app, copy the file over, **Backup → Restore from backup**, choose the file, enter the password, **Open backup**. Read the preview (it now counts crops, varieties, cycles, batches and planting records). Choose **Merge** (adds what is missing, deletes nothing; if the same record differs the phone's copy is kept unless you choose otherwise) or **Replace everything** (the preview lists exactly what will be deleted, including crop records; it needs a safety backup first and you must type `REPLACE`).
 
-### Make backups a habit
-The Dashboard reminds you when records changed since your last backup and the last backup is older than the reminder period (Settings, default 7 days). A backup is the **only** protection against a lost, stolen or reset phone, or Chrome's site data being cleared.
+The Home screen reminds you when records changed since your last backup and the last backup is older than the reminder period (Settings, default 7 days).
 
 ---
 
-## 7. Updating the app later (also from your phone)
+## 7. Testing
 
-1. In GitHub open the file you want to change, tap the pencil ✎, edit, **Commit changes**. (Or upload a new copy of the file with the same name.)
-2. **Every time you change any app file, raise the version number in two places**, for example `1.0.0` → `1.0.1`:
-   * `service-worker.js`: the line `const VERSION = '1.0.0';`
-   * `db.js`: the line `AMA.APP_VERSION = '1.0.0';`
-3. Phones notice the new version when the app is opened online (at most about once an hour) or when you tap **Settings → Check for a new version**. A banner says **A new version is ready**. Tap **Update now**.
+### Run by me — automated, in headless Chrome on a Linux server (259 checks, all passing on the final files)
 
-If you forget to raise the version, phones keep the old files.
+These ran against a local web server that behaves like GitHub Pages (app in a sub-folder, 10-minute file caching, HTTPS with a test certificate). **They did not run on a phone and not on real GitHub Pages.** Records were entered through the app's own forms, in a phone-sized window (393 × 851).
 
----
-
-## 8. Testing: what was actually run, and what still needs your phone
-
-### Run by me — automated, in headless Chrome on a Linux server (122 checks, all passing on the final files)
-
-These ran against a local web server that copies GitHub Pages' behaviour (app in a sub-folder, 10-minute file caching, HTTPS with a test certificate). **They did not run on a phone and not on real GitHub Pages.**
-
-| Your test item | What was checked | Result |
+| Your Phase 2 test | What was run | Result |
 |---|---|---|
-| 1 Loads over HTTPS | Page, scripts and storage work in a secure (https) page; no failed requests; **no request to any outside site** | Passed |
-| 2 Installs as PWA | Chrome's own installability check reports no errors. *(Tapping Install on a real phone is untested.)* The install button and "installed" message were tested with a simulated Chrome install event | Passed |
-| 3 Manifest valid | Chrome's manifest parser reports no errors; all icons load at their declared sizes; start address and scope stay inside the app folder | Passed |
-| 4 Service worker | Registers with the correct scope in the sub-folder, in a deeper folder and at a site root; all 11 files cached | Passed |
-| 5 Works offline | Browser network off: reloads, all 5 sections open. **Web server stopped completely**: app still opens and saves a farm | Passed |
-| 6 / 7 Farm and field creation | Through the real forms: UUIDs, timestamps, defaults, validation, duplicate names and codes refused, edit, delete (with cascade), search and filters | Passed |
-| 8 Records survive closing | Chrome closed completely and reopened with the same profile: identical data | Passed |
-| 9 Transactions | A failure half-way rolls everything back; six simultaneous saves of the same name create one farm; a failed farm delete restores its fields; "storage full" gives a clear message and saves nothing | Passed |
-| 10 Backup export | Real file download; correct name and header | Passed |
-| 11 Encryption | Salt and IV differ every time; file holds none of the farm text; **opened with separate code (Node.js crypto)**, so the format is a standard one, not only readable by the app; password found nowhere on the phone | Passed |
-| 12 Backup import | Restore with preview, merge, replace, safety backup | Passed |
-| 13 Wrong passwords | Wrong password, flipped bits in data/salt/IV/header, cut-off file, text file, picture, empty file, 105 MB file, newer format: all refused with clear messages; database unchanged afterwards | Passed |
-| 14 Duplicate IDs | Identical records recognised; differing copies listed; default merge keeps the phone's copy; overwriting needs a safety backup; replace needs typing REPLACE; hostile files (bad IDs, HTML in names, `__proto__` keys, orphan fields) detected, nothing runs | Passed |
-| 15 Transfer between installations | Three separate browsers, including one at a different web address: records arrive identical | Passed |
-| 16 Migration | A test upgrade 1→2 keeps every record and adds a store and index; a deliberately broken upgrade is rolled back with records intact; old code refuses a newer database safely | Passed |
-| 17 Phone layouts | 320, 360, 393, 412 px wide and landscape, 100 screens and states each (including very long unbroken names, restore preview, dialog): no sideways scroll, nothing off-screen, touch targets ≥ 44 px, text ≥ 12 px, inputs ≥ 16 px, contrast ≥ 4.5:1 | Passed |
-| Extra | New-version banner, "Update now", old cache removed, works offline after update; exact unit conversion checked against 2,960 independent exact values; 1,000 fields: screens under 70 ms, backup/restore about a quarter of a second each | Passed |
+| 1 Create a crop | Tomato and six more crops across all six categories; empty/duplicate/absurd values refused | Passed (test file 1, 50 checks for items 1–7) |
+| 2 Multiple varieties | Five varieties on two crops; seed details kept; duplicate names with different lot numbers allowed, exact duplicates refused | Passed |
+| 3 Create a cycle | Your scenario: Tomato, Ansal F1, open field, irrigated, 3,500 plants, 1.5 quarter-acres (= 1517.5711584 m² exactly) | Passed |
+| 4 Allocate to an existing field | Cycle attached to a Phase 1 field; conversion and "fits" check shown; farm/field/crop in-use protections | Passed |
+| 5 Record planting information | Planned vs actual numbers kept apart; nursery vs direct seeding; planting records; future dates refused | Passed |
+| 6 Edit records | Crops, varieties, cycles, batches, records edited; activity log written | Passed |
+| 7 Archive a cycle | Archive and restore; archived cycles hidden from statistics and free their area; delete needs typing `DELETE` | Passed |
+| 8 Accurate dashboard statistics | Every number compared with an independently known dataset (23 checks) | Passed |
+| 9 Prevent invalid field allocations | Single cycle larger than field refused; peak overlap warned; "Save anyway"/"Go back"; exact boundary; mixed units; undated rules | Passed |
+| 10 Close and reopen without data loss | Browser fully closed and reopened with the same profile: every record identical, including one saved a moment before closing | Passed (14 checks, shared with item 11) |
+| 11 Use in airplane mode | **Simulated:** browser network switched off, then web server stopped. Crops screens open; crop, variety, cycle, batch and record created offline; area warning works; backup made offline; survives closing and reopening. *Real Airplane mode on your phone is not yet tested.* | Passed |
+| 12 Export a backup with Phase 1 + 2 records | Opened with separate code (Node.js crypto): all stores equal the phone's, exact values kept, no farm or crop text visible in the file | Passed (29 checks, shared with item 13) |
+| 13 Restore it | Into an empty second phone: identical records and identical screens; merge conflicts; safety backup; replace; old Phase 1 backups restore; old Phase 1 app refuses new backups; damaged, inconsistent, hostile (HTML/script text) and too-new backups blocked or shown safely, with nothing imported | Passed |
+| 14 Upgrade without losing Phase 1 data | The genuine, unchanged Phase 1 v1.0.0 app installed with 2 farms, 3 fields; only the changed files uploaded; "Update now" tapped; every Phase 1 record byte-identical afterwards (only change: an internal database-version number and one "upgraded" log entry) | Passed (14 checks) |
+| Extra: layout | Crops screens at 320, 360, 393, 412 px and landscape (28 screens and states each, with very long names): no sideways scroll, touch targets ≥ 44 px, text ≥ 12 px, contrast ≥ 4.5:1, six-item menu fits | Passed (5 checks) |
+| Phase 1 regression | All 122 Phase 1 checks re-run on the final code (units, offline engine, farm/field forms, backup and restore, migration, update flow, layouts, settings, 1,000-field scale) | Passed |
+
+Test counts: Phase 1 re-run 122 · Phase 2 core 50 · dashboard and field-area 23 · close/reopen and offline 14 · backup and restore 29 · upgrade 14 · layout 5 · shrinking a field that has crops 2.
+
+During testing, these were found and fixed: the "Over-allocated" check wrongly compared an undated future plan with old past crops; calendar month labels were 11.5 px (now 12 px); links on the cycle page were only 20 px tall (now 44 px); several wording and label-width issues.
 
 ### Still needs your phone (not tested by me)
-1. Real **GitHub Pages** deployment (section 4) and that the address opens.
-2. Chrome on Android actually offering and completing **Install app**, and the icon looking right on your home screen.
-3. The **Offline checklist** in section 5 on the real phone, including after a restart.
-4. Where Chrome puts the downloaded backup file, and that the **Share** button (if your phone offers it) works.
-5. Moving a backup between **two real phones** and restoring it.
-6. Whether Chrome grants **protected storage** on your phone (it decides, based on how you use the app; the app tells you honestly either way).
-7. How fast the 600,000-step key calculation feels on your phone (about a quarter of a second on my test machine; older phones may take a few seconds. The app shows "Encrypting…").
-8. The Android **Back button** (each screen is a history step, so Back should go to the previous screen), the on-screen keyboard with the forms, and general feel.
+1. **Updating your real, installed 1.0.0 app** through GitHub (section 4), including the "A new version is ready" banner on your phone.
+2. **Real Airplane mode**, then fully closing and reopening the app, with the Crops module.
+3. Chrome on Android installing and showing the icon, and the Back button inside the Crops screens.
+4. The on-screen keyboard with the new forms (date fields, number fields), and typing numbers with a comma such as 3,500.
+5. Whether the calendar and overview feel right with *your* real dates and crops.
+6. Moving a backup between **two real phones**.
+7. Anything about real GitHub Pages timing or caching on your account.
+
+### Your phone checklist
+- [ ] Made a backup before updating; the file is in Downloads.
+- [ ] Updated (section 4B). Settings shows v1.1.0 and "All 13 app files are stored".
+- [ ] Farms and fields look exactly as before.
+- [ ] Entered the example scenario (section 3). Cycle page shows 1.5 quarter-acres (= 0.375 acres) and 3,500 plants.
+- [ ] Tried to make a second cycle bigger than the field: the app refuses or warns.
+- [ ] Airplane mode on; closed the app completely; opened it from the home screen: Crops and the cycle are still there. Added a planting record in Airplane mode.
+- [ ] Airplane mode off; made a new backup; erased nothing; checked the file is in Downloads.
+- [ ] (Optional) restored that backup on a second phone: crops, cycle and planting record all there.
 
 ---
 
-## 9. Limits and honest warnings
+## 8. Known limitations
 
-* **Chrome can delete the data.** Records live in the browser's storage for this app. Clearing Chrome's site data, uninstalling Chrome, resetting or losing the phone deletes them. "Protected storage" only lowers the chance that Chrome clears data when the phone runs low on space; it is never a guarantee. **Only backups kept outside the phone protect you.**
-* **Records on the phone are not encrypted by the app.** Only backup files are. Protect your phone with a screen lock, and keep backup files somewhere you trust.
-* **Lost password = lost backup.** There is no reset.
-* **Chrome does not tell the app whether a download really finished**, so "Last backup" means "a backup file was created". Always check Downloads.
-* **Incognito/private tabs and very old browsers are not supported** (no durable storage there). The app says so instead of failing silently.
-* **No live sync between phones.** Phones are brought together by restoring a backup. If two phones both change the same record, you choose which copy wins at restore time.
-* **Android and Chrome only** were designed for. Other browsers may work but were not considered.
-* **A public repository** is required for free GitHub Pages. It contains only code. Do not add anything personal to it.
+* **Chrome can delete the data.** Clearing Chrome's site data, uninstalling Chrome, resetting or losing the phone deletes the records. Only backups kept outside the phone protect you.
+* **Records on the phone are not encrypted by the app.** Only backup files are. Use a screen lock.
+* **Lost backup password = lost backup.** There is no reset.
+* **Chrome does not tell the app whether a download finished**, so "Last backup" means "a backup file was created". Check Downloads.
+* **No live sync between phones.** Move records with backups; if two phones edited the same record, you pick which copy wins when restoring.
+* **The calendar only shows dates you saved.** It does not create tasks, reminders or notifications, and it does not predict dates.
+* **Field-area check is date-based.** Cycles without dates count as overlapping everything unfinished, which can produce warnings you must override with "Save anyway". If you later make a field smaller in My Farm, cycles that no longer fit are flagged on the Crops overview instead of being blocked.
+* **One planting method per batch, one variety per cycle.** Mixed plantings (intercropping) are recorded as separate cycles on the same field.
+* **Cost fields on a variety are records only.** There is no finance module yet.
+* **Photos are not part of Phase 2.** Never upload photographs to GitHub.
+* **Help text uses "Tomato" as an example only.** The app contains no sample records and no Ama Farms data.
+* **Incognito tabs and very old browsers are not supported.**
+* **A public repository** is required for free GitHub Pages. It contains only code.
 * The first load needs internet. Updates need internet. Everything else does not.
 
-## 10. Troubleshooting
+## 9. Troubleshooting
 
 | Problem | What to do |
 |---|---|
-| GitHub shows **404** for your address | Pages not enabled or not finished: Settings → Pages (section 4). Wait 3 minutes. Check the name is exactly `ama-farmtech-offline` and the files are at the repository's top level. |
-| Page opens but is plain/unstyled or "could not start" | A file is missing or misnamed. Compare with the list in section 3E. Names are case-sensitive. |
-| Settings says "Only N of 11 app files are stored" | Usually the `icons` files are missing. Add them (section 3D), wait, reload the app online. |
-| No **Install app** in Chrome's menu | Reload the page online, wait 10 seconds, try again. Use **Add to Home screen** instead. Open it in Chrome itself, not another app's browser. |
-| App shows an old version | Settings → **Check for a new version**. Did you raise the version numbers (section 7)? |
-| "Wrong password or damaged file" | Check the password carefully (capital letters, spaces). If it keeps failing with the right password the file is damaged: copy it again from where you stored it. |
-| Backup file not in Downloads | Make another backup, then look in **Files → Downloads**; check Chrome's download permission for storage. |
-| "No free storage" message | Free space on the phone (delete unused files/apps), then try again. Nothing was saved. |
+| Update banner never appears | Close the app from recent apps, reopen with internet, wait 10 seconds, Settings → Check for a new version. Confirm all 8 files were committed (section 4A) and the Actions run has a green tick. |
+| Settings says "Only N of 13 app files are stored" | One of the files is missing on GitHub (usually `crops.js` or `crops-ui.js`). Upload it, wait, then Check for a new version. |
+| Crops tab missing | You are still on 1.0.0. Update (section 4B). |
+| Page is plain/unstyled or "could not start" | A file is missing or misnamed. File names are case-sensitive. |
+| "This field would be over-allocated" | Other cycles on that field use area at the same time. Check their dates and areas, archive finished ones, or tap Save anyway if it is intended. |
+| Cannot delete a crop, field or farm | Something uses it (a cycle, a variety). Archive it instead, or remove the dependent records first. |
+| Backup cannot be opened | Check the password (capitals, spaces). If it keeps failing the file is damaged: copy it again from where you stored it. |
+| GitHub shows 404 | Pages not enabled or not finished (Settings → Pages). Wait 3 minutes. |
 
-## 11. Growing the app (for later phases)
+## 10. For later phases
 
-* New data type: add a store in a new migration function in `db.js` (never edit the first one) and raise `SCHEMA_VERSION`.
-* New screens: add a route in `app.js` (`ROUTES` + `VIEWS`) and, if records are involved, a list in `backup.js` (`STORES`) so backups include them.
-* Records must keep their `id`, `createdAt`, `updatedAt` fields so merge and restore keep working.
-* Raise the app version in `service-worker.js` and `db.js` with every release.
-* Photos, when added, must be kept out of the repository and stored in IndexedDB; the backup format version should be raised when they are included.
+* New data type: add a store in a **new** migration function in `db.js` (never edit an old one), raise `SCHEMA_VERSION`, and add the store to `STORES` (and `RELATIONS`, if it points at other records) in `backup.js`.
+* New screens: call `AMA.ui.addRoutes(...)` as `crops-ui.js` does, and add the file to `APP_SHELL` in `service-worker.js`.
+* Raise the app version in `service-worker.js` (`VERSION`) and `db.js` (`AMA.APP_VERSION`) with every release.
+* Phase 3 has not been started.
 
 ---
 
-*AMA FarmTech Offline 1.0.0 · Ama Farms Ltd · Phase 1*
+*AMA FarmTech Offline 1.1.0 · Ama Farms Ltd · Phase 2*
