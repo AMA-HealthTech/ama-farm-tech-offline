@@ -15,7 +15,7 @@
  */
 'use strict';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CACHE_PREFIX = 'ama-farmtech-shell-';
 const CACHE_NAME = CACHE_PREFIX + VERSION;
 
@@ -26,6 +26,8 @@ const APP_SHELL = [
   'styles.css',
   'app.js',
   'db.js',
+  'crops.js',
+  'crops-ui.js',
   'backup.js',
   'manifest.webmanifest',
   'icons/icon.svg',

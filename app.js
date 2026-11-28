@@ -540,7 +540,7 @@
   /* ================================================================== */
 
   function backupStatus(s, counts) {
-    const records = counts.farms + counts.fields;
+    const records = counts.farms + counts.fields + (counts.crops || 0) + (counts.varieties || 0) + (counts.cycles || 0) + (counts.batches || 0) + (counts.plantings || 0);
     const last = s.lastBackupAt;
     const days = s.backupReminderDays || 7;
     if (!records) return { level: 'none', title: 'Nothing to back up yet.', text: 'Once you add a farm, back it up regularly.' };
@@ -565,6 +565,7 @@
     [/^\/farm\/([0-9a-f-]{36})\/field\/new\/?$/i, 'farm', 'fieldForm'],
     [/^\/field\/([0-9a-f-]{36})\/?$/i, 'farm', 'fieldDetail'],
     [/^\/field\/([0-9a-f-]{36})\/edit\/?$/i, 'farm', 'fieldForm'],
+    // Phase 2 (crop production) routes are added by crops-ui.js through AMA.ui.addRoutes
     [/^\/records(?:\/(farms|fields|activity))?\/?$/, 'records', 'records'],
     [/^\/backup\/?$/, 'backup', 'backup'],
     [/^\/settings(?:\/(install))?\/?$/, 'settings', 'settings'],
@@ -694,6 +695,14 @@
       statCard('Farm records', farms.length + fields.length, 'farms + fields', 'records'),
       statCard('Field area', hasArea ? units.group(units.fromSqm(totalSqm, 'acres', 2)) + ' ac' : '—', hasArea ? units.group(units.fromSqm(totalSqm, 'hectares', 2)) + ' ha' : 'No fields yet', 'field')));
 
+    // Crop production summary (Phase 2). It must never be able to break the Phase 1 dashboard.
+    try {
+      if (AMA.cropsUi && AMA.cropsUi.dashboardCard) {
+        const cropCard = await AMA.cropsUi.dashboardCard();
+        if (cropCard) wrap.appendChild(cropCard);
+      }
+    } catch (e) { /* ignore: the Crops tab will show the real error if there is one */ }
+
     // Backup
     const bs = backupStatus(st, counts);
     const backupCard = h('section', { class: 'card' },
@@ -777,6 +786,14 @@
     return wrap;
   }
 
+  /** A farm or field that has crop production cycles cannot be deleted. Shows why and returns true. */
+  async function blockedByCycles(where, what) {
+    const n = await db.countCycles(where);
+    if (!n) return false;
+    toast('This ' + what + ' has ' + plural(n, 'crop production cycle') + ' (archived ones count too), so it cannot be deleted. Open Crops, then Cycles, and delete or change those cycles first.', 'error');
+    return true;
+  }
+
   async function viewFarmDetail(route) {
     const id = route.match[1];
     const [farm, fields, st] = await Promise.all([db.getFarm(id), db.listFields(id), db.getSettings()]);
@@ -799,6 +816,7 @@
         }
       }) : null,
       button('Delete', 'btn btn-danger-outline', async () => {
+        if (await blockedByCycles({ farmId: id }, 'farm')) return;
         const ok = await confirmDialog({
           title: 'Delete "' + farm.name + '"?',
           message: [
@@ -919,6 +937,7 @@
     wrap.appendChild(h('div', { class: 'actions' },
       link('#/field/' + id + '/edit', 'Edit field', 'btn btn-secondary', 'edit'),
       button('Delete', 'btn btn-danger-outline', async () => {
+        if (await blockedByCycles({ fieldId: id }, 'field')) return;
         const ok = await confirmDialog({ title: 'Delete field "' + field.name + '"?', message: 'This cannot be undone. Tip: make a backup first if you might need it again.', confirmText: 'Delete field', danger: true });
         if (!ok) return;
         try {
@@ -942,6 +961,13 @@
         ['Notes', field.notes ? h('span', { class: 'pre', text: field.notes }) : ''],
         ['Created', fmtDate(field.createdAt, true)], ['Last changed', fmtDate(field.updatedAt, true)],
       ])));
+    // Crops planted in this field (Phase 2). Must never break the Phase 1 field page.
+    try {
+      if (AMA.cropsUi && AMA.cropsUi.fieldSection) {
+        const section = await AMA.cropsUi.fieldSection(field);
+        if (section) wrap.appendChild(section);
+      }
+    } catch (e) { /* ignore */ }
     return wrap;
   }
 
@@ -1150,7 +1176,8 @@
         const c = file.snapshot.counts;
         result.replaceChildren(h('div', { class: 'notice notice-ok' }, icon('check'), h('div', null,
           h('strong', { text: 'Backup created. ' }),
-          h('span', { text: file.fileName + ' (' + fmtBytes(file.sizeBytes) + ') with ' + plural(c.farms, 'farm') + ' and ' + plural(c.fields, 'field') + '.' }),
+          h('span', { text: file.fileName + ' (' + fmtBytes(file.sizeBytes) + ') with ' + plural(c.farms, 'farm') + ' and ' + plural(c.fields, 'field') +
+            (c.crops || c.cycles ? ', ' + plural(c.crops || 0, 'crop') + ' and ' + plural(c.cycles || 0, 'crop cycle') : '') + '.' }),
           h('p', { class: 'small', text: 'Chrome saves it to your Downloads folder. Open the Files app and check it is there. Keep a copy somewhere safe outside this phone (Google Drive, email to yourself, or another phone). Chrome does not let this app confirm that the file was saved.' }),
           h('div', { class: 'actions' },
             B.canShareFiles() ? button('Share / send file', 'btn btn-secondary btn-small', async () => {
@@ -1171,7 +1198,7 @@
     });
     return h('section', { class: 'card' },
       h('h2', { class: 'card-title' }, icon('backup'), 'Create encrypted backup'),
-      h('p', { class: 'muted', text: 'All farms, fields and activity are saved into one file, encrypted with a password you choose. The file is safe to keep in email or cloud storage because only the password opens it.' }),
+      h('p', { class: 'muted', text: 'All farms, fields, crop records and activity are saved into one file, encrypted with a password you choose. The file is safe to keep in email or cloud storage because only the password opens it.' }),
       notice('warn', 'Do not lose the password.', 'It is not stored anywhere. If you forget it, nobody can open the backup, including Ama Farms and the developers of this app. Write it down somewhere safe, apart from the file.'),
       h('div', { class: 'field' }, h('label', { for: 'bk-pw1', text: 'Backup password' }), pw1, meter.node),
       h('div', { class: 'field' }, h('label', { for: 'bk-pw2', text: 'Repeat password' }), pw2),
@@ -1182,7 +1209,21 @@
 
   /* ----------------------------- Restore ----------------------------- */
 
-  const STORE_LABEL = { farms: 'Farms', fields: 'Fields', activities: 'Activity log' };
+  const STORE_LABEL = {
+    farms: 'Farms', fields: 'Fields', crops: 'Crops', varieties: 'Varieties', cycles: 'Crop cycles',
+    batches: 'Planting batches', plantings: 'Planting records', activities: 'Activity log',
+  };
+  // Singular / plural names used in sentences about deleted or added records.
+  const STORE_NOUN = {
+    farms: ['farm', 'farms'], fields: ['field', 'fields'], crops: ['crop', 'crops'], varieties: ['variety', 'varieties'],
+    cycles: ['crop cycle', 'crop cycles'], batches: ['planting batch', 'planting batches'], plantings: ['planting record', 'planting records'],
+    activities: ['activity log entry', 'activity log entries'],
+  };
+  const countNoun = (store, n) => n + ' ' + STORE_NOUN[store][n === 1 ? 0 : 1];
+  function joinList(items) {
+    if (items.length <= 1) return items.join('');
+    return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
+  }
 
   function restoreCard(onChange) {
     const card = h('section', { class: 'card' });
@@ -1250,23 +1291,26 @@
     function drawPreview() {
       const p = S.parsed;
       const plan = B.makePlan(p, S.current, planOptions());
-      const hasCurrent = ['farms', 'fields', 'activities'].some((n) => S.current[n].length > 0);
-      const dupCount = ['farms', 'fields', 'activities'].reduce((n, k) => n + plan.analysis[k].different.length, 0);
-      const identicalCount = ['farms', 'fields', 'activities'].reduce((n, k) => n + plan.analysis[k].identical.length, 0);
+      const DS = B.DATA_STORES;
+      const hasCurrent = DS.some((n) => (S.current[n] || []).length > 0);
+      const dupCount = DS.reduce((n, k) => n + plan.analysis[k].different.length, 0);
+      const identicalCount = DS.reduce((n, k) => n + plan.analysis[k].identical.length, 0);
+      // Farms, fields and activity always get a row; the crop stores only when they have records somewhere.
+      const rowStores = DS.filter((k) => ['farms', 'fields', 'activities'].indexOf(k) !== -1 || p.records[k].length || (S.current[k] || []).length);
       const nothing = plan.summary.added === 0 && plan.summary.updated === 0 && plan.summary.removed === 0;
       const needSafety = hasCurrent && plan.changesExisting;
 
       const grid = h('div', { class: 'cmp', role: 'table', 'aria-label': 'Backup compared with this phone' },
         h('div', { class: 'cmp-row cmp-head', role: 'row' }, h('span', { role: 'columnheader', text: 'Records' }), h('span', { role: 'columnheader', text: 'In file' }), h('span', { role: 'columnheader', text: 'New' }), h('span', { role: 'columnheader', text: 'Same' }), h('span', { role: 'columnheader', text: 'Differ' })),
-        ['farms', 'fields', 'activities'].map((k) => h('div', { class: 'cmp-row', role: 'row' },
+        rowStores.map((k) => h('div', { class: 'cmp-row', role: 'row' },
           h('span', { role: 'cell', text: STORE_LABEL[k] }), h('span', { role: 'cell', text: String(p.records[k].length) }),
           h('span', { role: 'cell', text: String(plan.analysis[k].newItems.length) }), h('span', { role: 'cell', text: String(plan.analysis[k].identical.length) }),
           h('span', { role: 'cell', class: plan.analysis[k].different.length ? 'warn-text' : '', text: String(plan.analysis[k].different.length) }))));
 
       const dupList = [];
-      ['farms', 'fields'].forEach((k) => {
+      ['farms', 'fields', 'crops', 'varieties', 'cycles'].forEach((k) => {
         plan.analysis[k].different.slice(0, 5).forEach((d) => {
-          dupList.push(h('li', null, h('strong', { text: (k === 'farms' ? 'Farm: ' : 'Field: ') + d.backup.name }),
+          dupList.push(h('li', null, h('strong', { text: STORE_NOUN[k][0].charAt(0).toUpperCase() + STORE_NOUN[k][0].slice(1) + ': ' + d.backup.name }),
             h('span', { class: 'small muted', text: ' — same ID on this phone as "' + d.current.name + '". ' + (d.newer === 'backup' ? 'The backup copy is newer.' : d.newer === 'current' ? 'The copy on this phone is newer.' : 'Both were changed at the same time.') })));
         });
       });
@@ -1313,7 +1357,7 @@
         h('fieldset', { class: 'choices' },
           h('legend', { text: 'How should the backup be restored?' }),
           h('label', { class: 'choice' }, mergeRadio, h('span', null, h('strong', { text: 'Merge (recommended). ' }), 'Add the records that are missing. Nothing on this phone is deleted.')),
-          h('label', { class: 'choice' }, replaceRadio, h('span', null, h('strong', { text: 'Replace everything. ' }), 'Delete all farms, fields and activity on this phone and use only the backup.'))));
+          h('label', { class: 'choice' }, replaceRadio, h('span', null, h('strong', { text: 'Replace everything. ' }), 'Delete all farms, fields, crop records and activity on this phone and use only the backup.'))));
 
       if (S.mode === 'merge' && dupCount) {
         const sel = h('select', { id: 'rs-policy', 'aria-label': 'For records that differ' },
@@ -1334,10 +1378,14 @@
       }
 
       // Outcome
+      const keptParts = ['farms', 'fields', 'crops', 'varieties', 'cycles', 'batches', 'plantings']
+        .filter((k) => k === 'farms' || k === 'fields' || p.records[k].length)
+        .map((k) => countNoun(k, p.records[k].length));
+      const removedParts = DS.filter((k) => plan.detail[k].removed > 0).map((k) => countNoun(k, plan.detail[k].removed));
       const outcome = S.mode === 'replace'
-        ? 'This phone will end up with exactly what is in the backup: ' + plural(p.records.farms.length, 'farm') + ' and ' + plural(p.records.fields.length, 'field') + '. ' +
+        ? 'This phone will end up with exactly what is in the backup: ' + joinList(keptParts) + '. ' +
           (plan.summary.removed
-            ? 'What is on this phone but not in the backup will be DELETED: ' + plural(plan.detail.farms.removed, 'farm') + ', ' + plural(plan.detail.fields.removed, 'field') + ' and ' + plural(plan.detail.activities.removed, 'activity log entry', 'activity log entries') + '.'
+            ? 'What is on this phone but not in the backup will be DELETED: ' + joinList(removedParts) + '.'
             : 'Nothing on this phone will be deleted.')
         : 'This will add ' + plan.summary.added + ', update ' + plan.summary.updated + ', and keep ' + plan.summary.kept + ' as they are on this phone. Nothing will be deleted.';
       children.push(notice(S.mode === 'replace' && plan.summary.removed ? 'warn' : 'info', 'What will happen.', outcome));
@@ -1580,7 +1628,7 @@
       kvList([
         ['App', AMA.APP_NAME], ['Brand', AMA.BRAND], ['Version', AMA.APP_VERSION],
         ['Database', schema.name + ' (version ' + schema.version + ')'],
-        ['Stored records', plural(counts.farms, 'farm') + ', ' + plural(counts.fields, 'field') + ', ' + plural(counts.activities, 'activity entry', 'activity entries')],
+        ['Stored records', plural(counts.farms, 'farm') + ', ' + plural(counts.fields, 'field') + ', ' + plural(counts.crops || 0, 'crop') + ', ' + plural(counts.cycles || 0, 'crop cycle') + ', ' + plural(counts.activities, 'activity entry', 'activity entries')],
         ['Secure connection', window.isSecureContext ? 'Yes (https)' : 'No - offline use and encryption need https'],
       ]),
       h('p', { class: 'small muted', text: 'All records stay on this phone. The app has no account, no cloud database and sends no farm data anywhere.' })));
@@ -1588,11 +1636,11 @@
     // Danger zone
     wrap.appendChild(h('section', { class: 'card card-danger' },
       h('h2', { class: 'card-title', text: 'Erase all data on this phone' }),
-      h('p', { class: 'muted', text: 'Deletes every farm, field and activity entry stored in this app on this phone. Backup files you saved are not affected.' }),
+      h('p', { class: 'muted', text: 'Deletes every farm, field, crop record and activity entry stored in this app on this phone. Backup files you saved are not affected.' }),
       button('Erase all data', 'btn btn-danger-outline', async () => {
         const ok = await confirmDialog({
           title: 'Erase all data?',
-          message: ['This permanently deletes all farms, fields and activity on this phone. This cannot be undone.', 'Make a backup first if you might want these records again.'],
+          message: ['This permanently deletes all farms, fields, crop records and activity on this phone. This cannot be undone.', 'Make a backup first if you might want these records again.'],
           confirmText: 'Erase everything', danger: true, requireText: 'ERASE',
         });
         if (!ok) return;
@@ -1620,6 +1668,26 @@
     backup: viewBackup,
     settings: viewSettings,
     notFound: async () => notFoundView(),
+  };
+
+  /* ================================================================== */
+  /* Extension point (Phase 2: crops-ui.js adds its screens through this) */
+  /* ================================================================== */
+
+  AMA.ui = {
+    $, h, icon, ICONS, uid, plural, fmtDate, fmtRelative, fmtBytes, areaText, locationLine,
+    toast, confirmDialog, emptyState, notice, pageHead, link, button, kvList, friendlyError,
+    formControl, applyErrors, datalist, statCard, notFoundView, goto,
+    render: () => render(),
+    getSettings: () => settings,
+    refreshSettings: async () => {
+      settings = await db.getSettings();
+      return settings;
+    },
+    addRoutes(routes, views) {
+      routes.forEach((route) => ROUTES.push(route));
+      Object.assign(VIEWS, views);
+    },
   };
 
   /* ================================================================== */

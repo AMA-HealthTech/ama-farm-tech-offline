@@ -38,8 +38,26 @@
   const KDF_MAX = 5000000;
   const MAX_FILE_BYTES = 100 * 1024 * 1024;
   const MIN_PASSWORD = 8;
-  const STORES = ['farms', 'fields', 'activities', 'settings', 'backups'];
-  const OPTIONAL_STORES = ['settings', 'backups'];
+  // Every store that goes into a backup file. The Phase 2 stores are optional when reading,
+  // so a backup made by version 1.0.0 (farms and fields only) can still be restored.
+  const STORES = ['farms', 'fields', 'crops', 'varieties', 'cycles', 'batches', 'plantings', 'activities', 'settings', 'backups'];
+  const OPTIONAL_STORES = ['crops', 'varieties', 'cycles', 'batches', 'plantings', 'settings', 'backups'];
+  // Records that are counted in previews and replaced by a "Replace everything" restore.
+  const DATA_STORES = ['farms', 'fields', 'crops', 'varieties', 'cycles', 'batches', 'plantings', 'activities'];
+
+  // Which record points at which other record (child store, field, parent store, optional).
+  // A restore is blocked if it would leave a record pointing at something that does not exist.
+  const RELATIONS = [
+    ['fields', 'farmId', 'farms', false, 'field', 'farm'],
+    ['varieties', 'cropId', 'crops', false, 'variety', 'crop'],
+    ['cycles', 'farmId', 'farms', false, 'crop cycle', 'farm'],
+    ['cycles', 'fieldId', 'fields', false, 'crop cycle', 'field'],
+    ['cycles', 'cropId', 'crops', false, 'crop cycle', 'crop'],
+    ['cycles', 'varietyId', 'varieties', true, 'crop cycle', 'variety'],
+    ['batches', 'cycleId', 'cycles', false, 'planting batch', 'crop cycle'],
+    ['plantings', 'cycleId', 'cycles', false, 'planting record', 'crop cycle'],
+    ['plantings', 'batchId', 'batches', true, 'planting record', 'planting batch'],
+  ];
 
   class BackupError extends Error {
     constructor(code, message) {
@@ -162,6 +180,11 @@
     const stores = {
       farms: data.farms.sort(byCreated),
       fields: data.fields.sort(byCreated),
+      crops: data.crops.sort(byCreated),
+      varieties: data.varieties.sort(byCreated),
+      cycles: data.cycles.sort(byCreated),
+      batches: data.batches.sort(byCreated),
+      plantings: data.plantings.sort(byCreated),
       activities: data.activities.sort(byCreated),
       settings: data.settings.filter((x) => V.PORTABLE_SETTINGS.indexOf(x.key) !== -1),
       backups: data.backups.sort(byCreated),
@@ -312,7 +335,7 @@
     });
     ops.settings = { put: settingsPut };
 
-    ['farms', 'fields', 'activities'].forEach((name) => {
+    DATA_STORES.forEach((name) => {
       const a = analysis[name];
       const put = [];
       const d = { added: 0, updated: 0, unchanged: a.identical.length, kept: 0, removed: 0 };
@@ -348,31 +371,55 @@
     ops.backups = { put: analysis.backups.newItems.slice() };
     detail.backups = { added: analysis.backups.newItems.length };
 
-    // Integrity: every field must belong to a farm that will exist afterwards.
-    const farmIds = new Set();
-    if (mode === 'replace') {
-      parsed.records.farms.forEach((f) => farmIds.add(f.id));
-    } else {
-      (current.farms || []).forEach((f) => farmIds.add(f.id));
-      ops.farms.put.forEach((f) => farmIds.add(f.id));
-    }
-    const finalFields = new Map();
-    if (mode === 'merge') (current.fields || []).forEach((f) => finalFields.set(f.id, f));
-    ops.fields.put.forEach((f) => finalFields.set(f.id, f));
-    let orphans = 0;
-    finalFields.forEach((f) => {
-      if (!farmIds.has(f.farmId)) orphans++;
+    // Integrity: work out what the phone would hold after the restore, then check that every record
+    // points at records that will exist (a field at its farm, a crop cycle at its farm, field and crop...).
+    const finalRecords = {};
+    DATA_STORES.forEach((name) => {
+      const map = new Map();
+      if (mode === 'merge') (current[name] || []).forEach((x) => map.set(x.id, x));
+      ops[name].put.forEach((x) => map.set(x.id, x));
+      finalRecords[name] = map;
     });
     const problems = [];
-    if (orphans) {
-      problems.push(orphans + ' field' + (orphans === 1 ? '' : 's') + ' in the result would not belong to any farm. The restore was blocked to protect your data.');
+    let orphans = 0;
+    RELATIONS.forEach(([child, key, parent, optional, childLabel, parentLabel]) => {
+      let bad = 0;
+      finalRecords[child].forEach((rec) => {
+        const ref = rec[key];
+        if (optional && !ref) return;
+        if (!finalRecords[parent].has(ref)) bad++;
+      });
+      if (bad) {
+        orphans += bad;
+        problems.push(bad + ' ' + childLabel + (bad === 1 ? '' : 's') + ' in the result would not belong to any ' + parentLabel +
+          '. The restore was blocked to protect your data.');
+      }
+    });
+    // A crop cycle's field must belong to the cycle's farm, and its variety to its crop.
+    let mismatched = 0;
+    finalRecords.cycles.forEach((c) => {
+      const f = finalRecords.fields.get(c.fieldId);
+      if (f && f.farmId !== c.farmId) mismatched++;
+      if (c.varietyId) {
+        const v = finalRecords.varieties.get(c.varietyId);
+        if (v && v.cropId !== c.cropId) mismatched++;
+      }
+    });
+    finalRecords.plantings.forEach((p) => {
+      if (!p.batchId) return;
+      const b = finalRecords.batches.get(p.batchId);
+      if (b && b.cycleId !== p.cycleId) mismatched++;
+    });
+    if (mismatched) {
+      orphans += mismatched;
+      problems.push(mismatched + ' record' + (mismatched === 1 ? '' : 's') + ' in the result would point at records that do not match each other (for example a crop cycle whose field belongs to a different farm). The restore was blocked to protect your data.');
     }
     if (parsed.invalid.length && !skipInvalid) {
       problems.push(parsed.invalid.length + ' record' + (parsed.invalid.length === 1 ? ' in the backup is' : 's in the backup are') +
         ' damaged or invalid. The restore was blocked so that nothing is silently lost.');
     }
 
-    const hadData = ['farms', 'fields', 'activities'].some((n) => (current[n] || []).length > 0);
+    const hadData = DATA_STORES.some((n) => (current[n] || []).length > 0);
     const changesExisting = (mode === 'replace' && hadData) || summary.updated > 0;
 
     return { mode, policy, ops, summary, detail, analysis, problems, changesExisting, orphans };
@@ -384,10 +431,10 @@
     const s0 = plan.summary;
     await db.withTx(db.ALL_STORES, 'readwrite', async (s) => {
       if (plan.mode === 'replace') {
-        await Promise.all([r(s.farms.clear()), r(s.fields.clear()), r(s.activities.clear())]);
+        await Promise.all(DATA_STORES.map((name) => r(s[name].clear())));
       }
       const jobs = [];
-      ['farms', 'fields', 'activities', 'backups', 'settings'].forEach((name) => {
+      DATA_STORES.concat(['backups', 'settings']).forEach((name) => {
         plan.ops[name].put.forEach((rec) => jobs.push(r(s[name].put(rec))));
       });
       await Promise.all(jobs);
@@ -406,11 +453,10 @@
         sizeBytes: (info && info.sizeBytes) || 0,
         appVersion: (info && info.appVersion) || '',
         dbSchemaVersion: (info && info.dbSchemaVersion) || 0,
-        counts: {
-          farms: plan.detail.farms.added + plan.detail.farms.updated,
-          fields: plan.detail.fields.added + plan.detail.fields.updated,
-          activities: plan.detail.activities.added + plan.detail.activities.updated,
-        },
+        counts: DATA_STORES.reduce((o, name) => {
+          o[name] = plan.detail[name].added + plan.detail[name].updated;
+          return o;
+        }, {}),
         note: text,
       }));
       await r(s.activities.add(db.newActivity('backup.restore', 'backup', '', text, ts)));
@@ -470,12 +516,16 @@
         sizeBytes: file.sizeBytes,
         appVersion: AMA.APP_VERSION,
         dbSchemaVersion: db.SCHEMA_VERSION,
-        counts: { farms: c.farms, fields: c.fields, activities: c.activities },
+        counts: DATA_STORES.reduce((o, name) => {
+          o[name] = c[name] || 0;
+          return o;
+        }, {}),
         note: '',
       }));
       const label = file.kind === 'safety' ? 'Safety backup created' : 'Encrypted backup created';
+      const cropPart = (c.cycles || 0) + (c.crops || 0) ? ', ' + (c.crops || 0) + ' crops, ' + (c.cycles || 0) + ' crop cycles' : '';
       await r(s.activities.add(db.newActivity(file.kind === 'safety' ? 'backup.safety' : 'backup.export', 'backup', '',
-        label + ' (' + c.farms + ' farms, ' + c.fields + ' fields)', util.now())));
+        label + ' (' + c.farms + ' farms, ' + c.fields + ' fields' + cropPart + ')', util.now())));
       await r(s.settings.put({ key: 'lastBackupAt', value: ts, updatedAt: ts }));
     });
   }
@@ -516,6 +566,8 @@
     HEADER_LEN,
     KDF_ITERATIONS,
     MIN_PASSWORD,
+    STORES,
+    DATA_STORES,
     passwordStrength,
     buildSnapshot,
     encryptBackup,

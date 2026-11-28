@@ -17,7 +17,7 @@
   AMA.BRAND = 'Ama Farms Ltd';
   // Displayed in the app and written into every backup file.
   // Keep in step with VERSION in service-worker.js whenever you publish a change.
-  AMA.APP_VERSION = '1.0.0';
+  AMA.APP_VERSION = '1.1.0';
 
   /* ------------------------------------------------------------------ */
   /* Errors                                                              */
@@ -118,6 +118,8 @@
     const ACRE_SCALED = 40468564224n;
     const ACRE_SCALE = 7;
     const HA_IN_SQM = 10000n;
+    // A quarter of an acre is exactly 1011.7141056 square metres (also scaled by 10^7).
+    const QUARTER_SCALED = 10117141056n;
     const p10 = (n) => 10n ** BigInt(n);
 
     function parseDecimal(str, maxInt, maxFrac) {
@@ -166,6 +168,7 @@
       if (!d) return null;
       if (unit === 'hectares') return toStr(d.n * HA_IN_SQM, d.s);
       if (unit === 'acres') return toStr(d.n * ACRE_SCALED, d.s + ACRE_SCALE);
+      if (unit === 'quarter_acre') return toStr(d.n * QUARTER_SCALED, d.s + ACRE_SCALE);
       return null;
     }
 
@@ -181,6 +184,9 @@
       } else if (unit === 'acres') {
         num = d.n * p10(ACRE_SCALE + dp);
         den = p10(d.s) * ACRE_SCALED;
+      } else if (unit === 'quarter_acre') {
+        num = d.n * p10(ACRE_SCALE + dp);
+        den = p10(d.s) * QUARTER_SCALED;
       } else {
         return null;
       }
@@ -198,6 +204,27 @@
         total += p.n * p10(maxScale - p.s);
       });
       return toStr(total, maxScale);
+    }
+
+    /** Exact comparison of two square-metre decimal strings: -1, 0 or 1 (null if either is not a number). */
+    function cmpSqm(a, b) {
+      const x = parseStored(a);
+      const y = parseStored(b);
+      if (!x || !y) return null;
+      const s = Math.max(x.s, y.s);
+      const xn = x.n * p10(s - x.s);
+      const yn = y.n * p10(s - y.s);
+      return xn < yn ? -1 : xn > yn ? 1 : 0;
+    }
+
+    /** Exact a - b for square-metre decimal strings; "0" when b is larger. */
+    function minusSqm(a, b) {
+      const x = parseStored(a);
+      const y = parseStored(b);
+      if (!x || !y) return null;
+      const s = Math.max(x.s, y.s);
+      const diff = x.n * p10(s - x.s) - y.n * p10(s - y.s);
+      return diff <= 0n ? '0' : toStr(diff, s);
     }
 
     /** "12345.5" -> "12,345.5" (display only). */
@@ -222,16 +249,19 @@
       toSqm,
       fromSqm,
       sumSqm,
+      cmpSqm,
+      minusSqm,
       group,
       isPositiveWithin,
       label(unit) {
-        return unit === 'hectares' ? 'ha' : 'acres';
+        return unit === 'hectares' ? 'ha' : unit === 'quarter_acre' ? 'quarter-acres' : 'acres';
       },
       labelLong(unit) {
-        return unit === 'hectares' ? 'hectares' : 'acres';
+        return unit === 'hectares' ? 'hectares' : unit === 'quarter_acre' ? 'quarter-acres' : 'acres';
       },
+      /** The unit shown as the "equivalent" of a given unit. */
       other(unit) {
-        return unit === 'hectares' ? 'acres' : 'hectares';
+        return unit === 'hectares' ? 'acres' : unit === 'quarter_acre' ? 'acres' : 'hectares';
       },
     };
   })();
@@ -241,7 +271,7 @@
   /* ------------------------------------------------------------------ */
 
   const OPTIONS = {
-    areaUnit: [['acres', 'Acres'], ['hectares', 'Hectares']],
+    areaUnit: [['acres', 'Acres'], ['hectares', 'Hectares'], ['quarter_acre', 'Quarter-acres']],
     status: [
       ['planned', 'Planned'],
       ['preparing', 'Being prepared'],
@@ -347,7 +377,7 @@
     v.code = cleanText(i.code);
     if (v.code && !CODE_RE.test(v.code)) errors.code = 'Use letters, numbers, dot, dash or underscore (up to 20 characters).';
     v.areaUnit = cleanText(i.areaUnit);
-    if (v.areaUnit !== 'acres' && v.areaUnit !== 'hectares') errors.areaUnit = 'Choose acres or hectares.';
+    if (!OPTIONS.areaUnit.some((o) => o[0] === v.areaUnit)) errors.areaUnit = 'Choose acres, hectares or quarter-acres.';
     const rawArea = cleanText(i.areaValue);
     const normalized = units.normalizeInput(rawArea);
     if (!rawArea) {
@@ -415,8 +445,16 @@
   /* Sanitising records that come from a backup file --------------------- */
 
   const ACTIVITY_TYPE_RE = /^[a-z]{2,20}(\.[a-z]{2,20})?$/;
-  const ENTITY_TYPES = ['farm', 'field', 'backup', 'system'];
+  const ENTITY_TYPES = ['farm', 'field', 'crop', 'variety', 'cycle', 'batch', 'planting', 'backup', 'system'];
   const BACKUP_KINDS = ['export', 'restore', 'safety'];
+  // Stores whose records are counted in the backup history and restore previews.
+  const COUNTED_STORES = ['farms', 'fields', 'crops', 'varieties', 'cycles', 'batches', 'plantings', 'activities'];
+
+  // Sanitisers for stores added by other files (crops.js registers the Phase 2 ones).
+  const extraSanitizers = {};
+  function registerSanitizer(kind, fn) {
+    extraSanitizers[kind] = fn;
+  }
 
   function baseRecord(rec) {
     if (!util.isUuid(rec.id)) return 'missing or invalid id';
@@ -427,6 +465,7 @@
 
   function sanitizeRecord(kind, rec) {
     if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return { ok: false, error: 'not an object' };
+    if (extraSanitizers[kind]) return extraSanitizers[kind](rec);
     if (kind === 'farms') {
       const bad = baseRecord(rec);
       if (bad) return { ok: false, error: bad };
@@ -471,7 +510,7 @@
       if (!util.isIso(rec.createdAt)) return { ok: false, error: 'missing or invalid date' };
       if (BACKUP_KINDS.indexOf(rec.kind) === -1) return { ok: false, error: 'invalid backup kind' };
       const counts = {};
-      ['farms', 'fields', 'activities'].forEach((k) => {
+      COUNTED_STORES.forEach((k) => {
         const n = rec.counts && rec.counts[k];
         counts[k] = Number.isInteger(n) && n >= 0 && n < 1e9 ? n : 0;
       });
@@ -498,13 +537,19 @@
   /* ------------------------------------------------------------------ */
 
   const DB_NAME = 'ama-farmtech-offline';
-  const SCHEMA_VERSION = 1;
+  const SCHEMA_VERSION = 2;
   const STORE = Object.freeze({
     FARMS: 'farms',
     FIELDS: 'fields',
     SETTINGS: 'settings',
     ACTIVITIES: 'activities',
     BACKUPS: 'backups',
+    // Added in database version 2 (Phase 2: crop production)
+    CROPS: 'crops',
+    VARIETIES: 'varieties',
+    CYCLES: 'cycles',
+    BATCHES: 'batches',
+    PLANTINGS: 'plantings',
   });
   const ALL_STORES = Object.freeze(Object.values(STORE));
 
@@ -550,6 +595,43 @@
       const backups = ensureStore(db, tx, STORE.BACKUPS, { keyPath: 'id' });
       ensureIndex(backups, 'createdAt', 'createdAt');
       ensureIndex(backups, 'kind', 'kind');
+    },
+
+    // Version 2 (Phase 2, crop production): only ADDS stores and indexes.
+    // Farms, fields, settings, activities and backup history are not read or changed.
+    function toVersion2(db, tx) {
+      const crops = ensureStore(db, tx, STORE.CROPS, { keyPath: 'id' });
+      ensureIndex(crops, 'nameLower', 'nameLower');
+      ensureIndex(crops, 'category', 'category');
+      ensureIndex(crops, 'createdAt', 'createdAt');
+      ensureIndex(crops, 'updatedAt', 'updatedAt');
+
+      const varieties = ensureStore(db, tx, STORE.VARIETIES, { keyPath: 'id' });
+      ensureIndex(varieties, 'cropId', 'cropId');
+      ensureIndex(varieties, 'dupKey', 'dupKey');
+      ensureIndex(varieties, 'createdAt', 'createdAt');
+      ensureIndex(varieties, 'updatedAt', 'updatedAt');
+
+      const cycles = ensureStore(db, tx, STORE.CYCLES, { keyPath: 'id' });
+      ensureIndex(cycles, 'farmId', 'farmId');
+      ensureIndex(cycles, 'fieldId', 'fieldId');
+      ensureIndex(cycles, 'cropId', 'cropId');
+      ensureIndex(cycles, 'varietyId', 'varietyId');
+      ensureIndex(cycles, 'status', 'status');
+      ensureIndex(cycles, 'createdAt', 'createdAt');
+      ensureIndex(cycles, 'updatedAt', 'updatedAt');
+
+      const batches = ensureStore(db, tx, STORE.BATCHES, { keyPath: 'id' });
+      ensureIndex(batches, 'cycleId', 'cycleId');
+      ensureIndex(batches, 'createdAt', 'createdAt');
+      ensureIndex(batches, 'updatedAt', 'updatedAt');
+
+      const plantings = ensureStore(db, tx, STORE.PLANTINGS, { keyPath: 'id' });
+      ensureIndex(plantings, 'cycleId', 'cycleId');
+      ensureIndex(plantings, 'batchId', 'batchId');
+      ensureIndex(plantings, 'date', 'date');
+      ensureIndex(plantings, 'createdAt', 'createdAt');
+      ensureIndex(plantings, 'updatedAt', 'updatedAt');
     },
   ];
 
@@ -741,9 +823,11 @@
   }
 
   async function deleteFarm(id) {
-    return withTx([STORE.FARMS, STORE.FIELDS, STORE.ACTIVITIES, STORE.SETTINGS], 'readwrite', async (s) => {
+    return withTx([STORE.FARMS, STORE.FIELDS, STORE.CYCLES, STORE.ACTIVITIES, STORE.SETTINGS], 'readwrite', async (s) => {
       const farm = await r(s.farms.get(id));
       if (!farm) throw new AppError('notfound', 'This farm no longer exists.');
+      const inUse = await r(s.cycles.index('farmId').count(id));
+      if (inUse) throw new AppError('in_use', inUseMessage('farm', inUse));
       const fieldKeys = await r(s.fields.index('farmId').getAllKeys(id));
       await Promise.all(fieldKeys.map((k) => r(s.fields.delete(k))));
       await r(s.farms.delete(id));
@@ -807,10 +891,27 @@
     });
   }
 
+  function inUseMessage(what, n) {
+    return 'This ' + what + ' has ' + n + ' crop production cycle' + (n === 1 ? '' : 's') + ' (archived ones count too), so it cannot be deleted. ' +
+      'Open Crops > Cycles and delete or change those cycles first. Nothing was deleted.';
+  }
+
+  /** How many crop production cycles use a farm or a field (used before showing a delete confirmation). */
+  async function countCycles(where) {
+    const w = where || {};
+    return withTx([STORE.CYCLES], 'readonly', (s) => {
+      if (w.fieldId) return r(s.cycles.index('fieldId').count(w.fieldId));
+      if (w.farmId) return r(s.cycles.index('farmId').count(w.farmId));
+      return r(s.cycles.count());
+    });
+  }
+
   async function deleteField(id) {
-    return withTx([STORE.FIELDS, STORE.ACTIVITIES, STORE.SETTINGS], 'readwrite', async (s) => {
+    return withTx([STORE.FIELDS, STORE.CYCLES, STORE.ACTIVITIES, STORE.SETTINGS], 'readwrite', async (s) => {
       const field = await r(s.fields.get(id));
       if (!field) throw new AppError('notfound', 'This field no longer exists.');
+      const inUse = await r(s.cycles.index('fieldId').count(id));
+      if (inUse) throw new AppError('in_use', inUseMessage('field', inUse));
       await r(s.fields.delete(id));
       const ts = util.now();
       await r(s.activities.add(newActivity('field.delete', 'field', id, 'Field deleted: ' + field.name, ts)));
@@ -858,11 +959,16 @@
     return limit ? rows.slice(0, limit) : rows;
   }
   async function getCounts() {
-    return withTx([STORE.FARMS, STORE.FIELDS, STORE.ACTIVITIES, STORE.BACKUPS], 'readonly', async (s) => ({
+    return withTx(ALL_STORES, 'readonly', async (s) => ({
       farms: await r(s.farms.count()),
       fields: await r(s.fields.count()),
       activities: await r(s.activities.count()),
       backups: await r(s.backups.count()),
+      crops: await r(s.crops.count()),
+      varieties: await r(s.varieties.count()),
+      cycles: await r(s.cycles.count()),
+      batches: await r(s.batches.count()),
+      plantings: await r(s.plantings.count()),
     }));
   }
   /** One consistent read of every store (used by backup and restore). */
@@ -918,7 +1024,10 @@
   async function eraseAllData() {
     const ts = util.now();
     await withTx(ALL_STORES, 'readwrite', async (s) => {
-      await Promise.all([r(s.farms.clear()), r(s.fields.clear()), r(s.activities.clear()), r(s.backups.clear())]);
+      await Promise.all([
+        r(s.farms.clear()), r(s.fields.clear()), r(s.activities.clear()), r(s.backups.clear()),
+        r(s.crops.clear()), r(s.varieties.clear()), r(s.cycles.clear()), r(s.batches.clear()), r(s.plantings.clear()),
+      ]);
       const keys = await r(s.settings.getAllKeys());
       await Promise.all(keys.filter((k) => k !== 'schemaVersion' && k !== 'dbCreatedAt').map((k) => r(s.settings.delete(k))));
       await r(s.activities.add(newActivity('system.erase', 'system', '', 'All data on this phone was erased', ts)));
@@ -963,6 +1072,10 @@
     field: validateField,
     setting: validateSetting,
     sanitizeRecord,
+    registerSanitizer,
+    COUNTED_STORES,
+    ENTITY_TYPES,
+    checkLen,
     cleanText,
     OPTIONS,
     optionLabel,
@@ -997,6 +1110,7 @@
     listActivities,
     listBackups,
     getCounts,
+    countCycles,
     readAll,
     getSettings,
     saveSettings,
